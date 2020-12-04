@@ -32,7 +32,7 @@ import tensorflow as tf
 FLAGS = flags.FLAGS
 
 # Optimizer settings.
-flags.DEFINE_float('learning_rate', 0.00048, 'Learning rate.')
+flags.DEFINE_float('learning_rate', 1e-4, 'Learning rate.')
 flags.DEFINE_float('adam_epsilon', 1e-3, 'Adam epsilon.')
 
 flags.DEFINE_integer('stack_size', 4, 'Number of frames to stack.')
