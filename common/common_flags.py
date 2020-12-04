@@ -31,7 +31,7 @@ flags.DEFINE_enum(
     'play. A learner performs policy inference for batches of observations '
     'coming from multiple actors, and use the generated trajectories to learn.')
 
-flags.DEFINE_integer('num_eval_envs', 0,
+flags.DEFINE_integer('num_eval_envs', 10,
                      'Number of environments that will be used for eval '
                      ' (for agents that support eval environments).')
 flags.DEFINE_integer(
