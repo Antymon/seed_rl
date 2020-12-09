@@ -1,82 +1,77 @@
 import tensorflow as tf
 import time
 from seed_rl import grpc
-import threading
 import random
 
-max_i = 10
+max_tick_tocks = 10
 
 from multiprocessing import Process
 import os
 
 
-def info(title):
+def print_process_info(title):
+    print("^^^^^^^^^^^^^^^^^^^^^^^^^^^^")
     print(title)
     print('module name:', __name__)
     print('parent process:', os.getppid())
     print('process id:', os.getpid())
+    print("$$$$$$$$$$$$$$$$$$$$$$$$$$$$")
 
 
-def f(name):
-    # info('function f')
-    print('hello', name)
+def worker_loop(name):
+    print_process_info(name)
     client = grpc.Client("0.0.0.0:6011")
-    id = threading.get_ident()
-    for i in range(5):
+    for i in range(max_tick_tocks):
         time.sleep(random.random())
-        val = client.inference(id)
-        print("Thread {} request {} got reply {}".format(id, i, val))
+        val = client.inference(name).numpy()
+        print("{}'s request no {} got {} reply: {}".format(name, i, "correct" if val % 2 == 1 else "INCORRECT", val))
 
 
-class Counter(object):
+class DummyModel(tf.Module):
+    inference_specs = [tf.TensorSpec([], tf.string, 'env_id'), ]
+
     def __init__(self):
-        self.i = 0
+        self.var = tf.Variable(initial_value=1, trainable=False, dtype=tf.int64)
+
+    @tf.function(input_signature=inference_specs)
+    def inference(self, env_id):
+
+        v = self.var
+        while v % 2 == 0:
+            v = self.var
+            # tf.print(env_id, "waits")
+        return v
+
+    @tf.function
+    def inc(self):
+        return self.var.assign_add(1)
+
+    @tf.function
+    def dec(self):
+        return self.var.assign_sub(1)
 
 
 if __name__ == '__main__':
-    print("hello")
 
-    var = tf.Variable(initial_value=1, trainable=False, dtype=tf.int64)
+    print("Processes should stay silent on TOCK")
 
-
-    inference_specs = [
-        tf.TensorSpec([], tf.int64, 'env_id'),
-    ]
-
-    c = Counter()
-    c.i = 1
-
-
-    @tf.function(input_signature=inference_specs)
-    def inference(env_id):
-        tf.print(env_id)
-        while var % 2 == 0:
-            pass
-        return var
-
-
+    m = DummyModel()
     server = grpc.Server(["0.0.0.0:6011"])
-
-    print("lol0")
-
-    server.bind(inference)
-    print("lol")
-
+    server.bind(m.inference)
     server.start()
 
-    print("lol2")
+    print_process_info('main line')
+    p = Process(target=worker_loop, args=('bob',))
+    p2 = Process(target=worker_loop, args=('alice',))
 
-    info('main line')
-    p = Process(target=f, args=('bob',))
-    p2 = Process(target=f, args=('alice',))
-
-    var = var - 1
+    m.dec()
     p.start()
     p2.start()
 
-    while var.numpy()[0] < max_i:
-        var = var + 1
-        print(var)
+    while m.var.read_value() < max_tick_tocks:
+        m.inc()
+        count = m.var.read_value().numpy()
+        print("{} {}".format("tick" if count % 2 == 0 else "tock", count))
         time.sleep(1)
 
     p.join()
