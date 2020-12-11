@@ -26,8 +26,8 @@ def actor_loop(name, id):
         print("{}'s request no {} got {} reply".format(name, i, "correct" if val == id else "INCORRECT"))
 
 
-def learner_loop():
-    print_process_info('lerner')
+def learner_loop(model):
+    print_process_info('learner')
     for i in range(10):
         training = i % 2 == 0
 
@@ -38,7 +38,7 @@ def learner_loop():
         time.sleep(1)
 
 
-class DummyModel(tf.Module):
+class MutexDummyModel(tf.Module):
 
     def __init__(self):
         self.is_training = tf.Variable(initial_value=False, trainable=False, dtype=tf.bool)
@@ -75,11 +75,44 @@ class DummyModel(tf.Module):
 
         return
 
+class MutexViaInferenceInvalidationDummyModel(tf.Module):
 
-if __name__ == '__main__':
+    def __init__(self):
+        self.is_training = tf.Variable(initial_value=False, trainable=False, dtype=tf.bool)
 
-    model = DummyModel()
+    @tf.function(input_signature=[tf.TensorSpec([], tf.int32, 'env_id'), ])
+    def infer(self, env_id):
+        # invariant: act of inference is never longer than act of training as a timespan between sync primitive toggle
+        # if violated, inference outcome is unknown and likely to contribute noise
+        # do inference only if training has not started and accept result only if training is not on when returning
+        current_inference_invalid = tf.constant(True)
+        while current_inference_invalid:
+            while self.is_training:
+                pass
+            # imitate work
+            for _ in range(int(1e4)):
+                pass
 
+            current_inference_invalid = self.is_training
+
+        return env_id
+
+    @tf.function
+    def train(self):
+        self.is_training.assign(True)
+
+        tf.print("training start")
+
+        for _ in range(int(1e5)):
+            pass
+
+        tf.print("training end")
+
+        self.is_training.assign(False)
+
+        return
+
+def run_experiment(model):
     server = grpc.Server(["0.0.0.0:6011"])
     server.bind(model.infer)
     server.start()
@@ -88,7 +121,7 @@ if __name__ == '__main__':
     for w in workers:
         w.start()
 
-    learner_loop()
+    learner_loop(model)
 
     for w in workers:
         w.join()
@@ -96,3 +129,10 @@ if __name__ == '__main__':
     server.shutdown()
 
     print("Done")
+
+if __name__ == '__main__':
+
+
+    # run_experiment(MutexDummyModel())
+    run_experiment(MutexViaInferenceInvalidationDummyModel())
+
