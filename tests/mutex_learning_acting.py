@@ -3,11 +3,10 @@ import time
 from seed_rl import grpc
 import random
 
-max_tick_tocks = 10
-
 from multiprocessing import Process
 import os
 
+ACTOR_NAMES = ["Alice", "Bob", "Celine", "Donald", "Elisa", "Francois", "Greta", "Henric", "Isa", "John", "Kay"]
 
 def print_process_info(title):
     print("^^^^^^^^^^^^^^^^^^^^^^^^^^^^")
@@ -18,64 +17,81 @@ def print_process_info(title):
     print("$$$$$$$$$$$$$$$$$$$$$$$$$$$$")
 
 
-def worker_loop(name):
-    print_process_info(name)
+def actor_loop(name, id):
+    print_process_info("actor {}".format(name))
     client = grpc.Client("0.0.0.0:6011")
-    for i in range(max_tick_tocks):
+    for i in range(10):
         time.sleep(random.random())
-        val = client.inference(name).numpy()
-        print("{}'s request no {} got {} reply: {}".format(name, i, "correct" if val % 2 == 1 else "INCORRECT", val))
+        val = client.infer(id).numpy()
+        print("{}'s request no {} got {} reply".format(name, i, "correct" if val == id else "INCORRECT"))
+
+
+def learner_loop():
+    print_process_info('lerner')
+    for i in range(10):
+        training = i % 2 == 0
+
+        if training:
+            model.train()
+
+        print("{} {}".format("tick" if i % 2 == 0 else "tock", i))
+        time.sleep(1)
 
 
 class DummyModel(tf.Module):
-    inference_specs = [tf.TensorSpec([], tf.string, 'env_id'), ]
 
     def __init__(self):
-        self.var = tf.Variable(initial_value=1, trainable=False, dtype=tf.int64)
+        self.is_training = tf.Variable(initial_value=False, trainable=False, dtype=tf.bool)
+        self.is_inferring = tf.Variable(initial_value=tf.zeros([len(ACTOR_NAMES)], dtype=tf.bool), trainable=False,
+                                        dtype=tf.bool)
 
-    @tf.function(input_signature=inference_specs)
-    def inference(self, env_id):
+    @tf.function(input_signature=[tf.TensorSpec([], tf.int32, 'env_id'), ])
+    def infer(self, env_id):
+        while self.is_training:
+            pass
 
-        v = self.var
-        while v % 2 == 0:
-            v = self.var
-            # tf.print(env_id, "waits")
-        return v
+        self.is_inferring[env_id].assign(True)
+        for _ in range(int(1e4)):
+            pass
+
+        self.is_inferring[env_id].assign(False)
+
+        return env_id
 
     @tf.function
-    def inc(self):
-        return self.var.assign_add(1)
+    def train(self):
+        self.is_training.assign(True)
+        while tf.reduce_sum(tf.cast(self.is_inferring, tf.int32)) != 0:
+            pass
 
-    @tf.function
-    def dec(self):
-        return self.var.assign_sub(1)
+        tf.print("training start")
+
+        for _ in range(int(1e5)):
+            pass
+
+        tf.print("training end")
+
+        self.is_training.assign(False)
+
+        return
 
 
 if __name__ == '__main__':
 
-    print("Processes should stay silent on TOCK")
+    model = DummyModel()
 
-    m = DummyModel()
     server = grpc.Server(["0.0.0.0:6011"])
-    server.bind(m.inference)
+    server.bind(model.infer)
     server.start()
 
-    print_process_info('main line')
-    p = Process(target=worker_loop, args=('bob',))
-    p2 = Process(target=worker_loop, args=('alice',))
+    workers = [Process(target=actor_loop, args=(name, idx)) for idx, name in enumerate(ACTOR_NAMES)]
+    for w in workers:
+        w.start()
 
-    m.dec()
-    p.start()
-    p2.start()
+    learner_loop()
 
-    while m.var.read_value() < max_tick_tocks:
-        m.inc()
-        count = m.var.read_value().numpy()
-        print("{} {}".format("tick" if count % 2 == 0 else "tock", count))
-        time.sleep(1)
-
-    p.join()
-    p2.join()
+    for w in workers:
+        w.join()
 
     server.shutdown()
 
