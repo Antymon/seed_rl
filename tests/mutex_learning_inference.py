@@ -1,9 +1,9 @@
 import tensorflow as tf
-import time
+import numpy as np
 from seed_rl import grpc
 import random
 from abc import abstractmethod
-
+import time
 from multiprocessing import Process
 import os
 
@@ -23,9 +23,14 @@ def actor_loop(name, id):
     # print_process_info("actor {}".format(name))
     client = grpc.Client("0.0.0.0:6011")
     for i in range(5):
-        time.sleep(random.random())
-        val = client.infer(id)[0].numpy()
-        print("{}'s request no {} got {} reply".format(name, i, "correct" if val == id else "INCORRECT"))
+        c = True  # implementing do...while
+        result = None
+        while c:
+            time.sleep(random.random())
+            result = client.infer(id)
+            # if second param was False
+            c = result[1].dtype == tf.bool and not result[1].numpy()
+        print("{}'s request no {} got {} reply".format(name, i, "correct" if result[0].numpy() == id else "INCORRECT"))
 
 
 def learner_loop(model):
@@ -74,9 +79,10 @@ class DummyModel(tf.Module):
         wait_cycles = tf.constant(0)
         while condition_fn():
             if wait_cycles % int(print_freq) == 0:
-                tf.print(id,"waiting", wait_cycles)
+                tf.print(id, "waiting", wait_cycles)
             wait_cycles += 1
         return wait_cycles
+
 
 class MutexDummyModel(DummyModel):
 
@@ -92,14 +98,14 @@ class MutexDummyModel(DummyModel):
         wait_cycles = tf.constant(0)
         while self.is_training:
             if wait_cycles % int(1e5) == 0:
-                tf.print(env_id,"waiting", wait_cycles)
+                tf.print(env_id, "waiting", wait_cycles)
             wait_cycles += 1
 
         # always true, just to forbid compiler to move this before wait
         if wait_cycles >= 0:
             self.is_inferring[env_id].assign(True)
 
-        tf.print(env_id, "waited",wait_cycles, tf.reduce_sum(tf.cast(self.is_inferring, tf.int32)))
+        tf.print(env_id, "waited", wait_cycles, tf.reduce_sum(tf.cast(self.is_inferring, tf.int32)))
 
         def on_finish_fn():
             self.is_inferring[env_id].assign(False)
@@ -173,6 +179,50 @@ class MutexViaInferenceInvalidationDummyModel(DummyModel):
         return
 
 
+class MutexViaInferenceInvalidationWithoutBusyWaitDummyModel(DummyModel):
+
+    def __init__(self):
+        self.is_training = tf.Variable(initial_value=False, trainable=False, dtype=tf.bool)
+
+    @tf.function(input_signature=[tf.TensorSpec([], tf.int32, 'env_id'), ])
+    def infer(self, env_id):
+
+        # invariant: act of inference is never longer than act of training as a timespan between sync primitive toggle
+        # if violated, inference outcome is unknown and likely to contribute noise
+        # do inference only if training has not started and accept result only if training is not on when returning
+
+        if self.is_training:
+            tf.print(env_id, "inference INVALIDATED BEG")
+            return env_id, False
+
+        r = self.simulate_work(3e5, 3, ("working", env_id))[0]
+
+        # dummy condition, always true to prevent optimization
+        if r >= tf.constant(0):
+            if self.is_training:
+                tf.print(env_id, "inference INVALIDATED END")
+                return env_id, False
+            else:
+                tf.print(env_id, "done")
+                return env_id, True
+        return env_id, True
+
+
+    @tf.function
+    def train(self):
+        self.is_training.assign(True)
+
+        tf.print("training start")
+
+        def on_finish_fn():
+            self.is_training.assign(False)
+            tf.print("training end", self.is_training)
+
+        self.simulate_work(5e5, 10, "training", on_finish_fn)
+
+        return
+
+
 def run_experiment(model):
     server = grpc.Server(["0.0.0.0:6011"])
     server.bind(model.infer)
@@ -194,4 +244,5 @@ def run_experiment(model):
 
 if __name__ == '__main__':
     # run_experiment(MutexDummyModel())
-    run_experiment(MutexViaInferenceInvalidationDummyModel())
+    run_experiment(MutexViaInferenceInvalidationWithoutBusyWaitDummyModel())
+    # run_experiment(MutexViaInferenceInvalidationDummyModel())
